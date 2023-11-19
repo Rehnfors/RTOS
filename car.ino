@@ -56,7 +56,7 @@ void setup()
     // xTaskCreate(gate, "Gatekeeper", 128, NULL, 1, &Gate_handle);
     xTaskCreate(checkEngine, "Brains of the operation", 128, NULL, 1, &Check_handle);
     xTaskCreate(motor, "Motor simulation", 128, &MotorStatus, 1, &Motor_handle);
-    // xTaskCreate(ventilation, "Ventilation simulation", 128, &VentStatus, 1, &Ventilation_handle);
+    xTaskCreate(ventilation, "Ventilation simulation", 128, &VentStatus, 1, &Ventilation_handle);
     // xTaskCreate(fuel, "Fuel simulation", 128, NULL, 1, &Fuel_handle);
     vTaskStartScheduler();
 }
@@ -77,8 +77,8 @@ void checkEngine(void *xMotor1)
     char *ventAnswer = NULL;
     char *fuelAnswer = NULL;
     TickType_t xTicksToWait = pdMS_TO_TICKS(1000);
+    TickType_t smallTick = pdMS_TO_TICKS(100);
     BaseType_t qStatus;
-
 
     while (1)
     {
@@ -95,9 +95,8 @@ void checkEngine(void *xMotor1)
                 Serial.println("The semaphore was not taken, motor1");
             }
         }
+        vTaskDelay(smallTick);
 
-        vTaskDelay(xTicksToWait/10);
-        
         if (xSemaphore != NULL)
         {
             if (xSemaphoreTake(xSemaphore, (TickType_t)10) == pdTRUE)
@@ -109,6 +108,34 @@ void checkEngine(void *xMotor1)
             else
             {
                 Serial.println("The semaphore was not taken, motor2");
+            }
+        }
+
+        vTaskDelay(smallTick);
+        if (xSemaphore != NULL)
+        {
+            if (xSemaphoreTake(xSemaphore, (TickType_t)10) == pdTRUE)
+            {
+                xQueueSend(motorQueue, (void *)&ventPayload, (TickType_t)10);
+                xSemaphoreGive(xSemaphore);
+            }
+            else
+            {
+                Serial.println("The semaphore was not taken, vent1");
+            }
+        }
+
+        if (xSemaphore != NULL)
+        {
+            if (xSemaphoreTake(xSemaphore, (TickType_t)10) == pdTRUE)
+            {
+                xQueueReceive(motorQueue, (void *)&ventAnswer, (TickType_t)10);
+                Serial.println(ventAnswer);
+                xSemaphoreGive(xSemaphore);
+            }
+            else
+            {
+                Serial.println("The semaphore was not taken, vent2");
             }
         }
         vTaskSuspend(Check_handle);
@@ -187,9 +214,9 @@ void motor(void *xMotor)
                             strcat(message, rpm);
                             strcat(message, "\n");
                             xQueueSend(motorQueue, &message, xTicksToWait);
+                            xSemaphoreGive(xSemaphore);
                             vTaskDelay(xTicksToWait);
                             vPortFree(message);
-                            xSemaphoreGive(xSemaphore);
                             vTaskSuspend(Motor_handle);
                         }
                     }
@@ -199,12 +226,18 @@ void motor(void *xMotor)
                         message = (char *)pvPortMalloc(20 * sizeof(char));
                         strcat(message, "x01:ERROR: M.||Gb.\n");
                         xQueueSend(motorQueue, &message, xTicksToWait);
-                        vPortFree(message);
                         xSemaphoreGive(xSemaphore);
+                        vTaskDelay(xTicksToWait);
+                        vPortFree(message);
                         vTaskSuspend(Motor_handle);
                     }
                 }
                 vTaskSuspend(Motor_handle);
+            }
+
+            else
+            {
+                Serial.println("The semaphore was not taken, inside motor");
             }
         }
     }
@@ -220,26 +253,39 @@ void ventilation(void *xVentilation)
 
     while (1)
     {
-        qStatus = xQueueReceive(motorQueue, &receivedPayload, xTicksToWait);
-        if (qStatus == pdPASS && strcmp(receivedPayload, "Checking vent.") == 0)
+        if (xSemaphore != NULL)
         {
-            Serial.println("Hee");
-            vTaskDelay(xTicksToWait);
-            if (xVent->ventilationCheck == true)
+            if (xSemaphoreTake(xSemaphore, (TickType_t)10) == pdTRUE)
             {
-                sendingPayload = (char *)pvPortMalloc(15 * sizeof(char));
-                strcpy(sendingPayload, "Vent. is ok.\n");
-                Serial.println("Test2");
-                xQueueSend(motorQueue, &sendingPayload, xTicksToWait);
-                vPortFree(sendingPayload);
-            }
+                qStatus = xQueueReceive(motorQueue, &receivedPayload, xTicksToWait);
+                if (qStatus == pdPASS && strcmp(receivedPayload, "Checking vent.") == 0)
+                {
+                    vTaskDelay(xTicksToWait);
+                    if (xVent->ventilationCheck == true)
+                    {
+                        sendingPayload = (char *)pvPortMalloc(15 * sizeof(char));
+                        strcpy(sendingPayload, "Vent. is ok.\n");
+                        xQueueSend(motorQueue, &sendingPayload, xTicksToWait);
+                        xSemaphoreGive(xSemaphore);
+                        vPortFree(sendingPayload);
+                        vTaskSuspend(Ventilation_handle);
+                    }
 
-            else
-            {
-                sendingPayload = (char *)pvPortMalloc(15 * sizeof(char));
-                strcpy(sendingPayload, "x02:ERROR: Vent\n");
-                xQueueSend(motorQueue, &sendingPayload, xTicksToWait);
-                vPortFree(sendingPayload);
+                    else
+                    {
+                        sendingPayload = (char *)pvPortMalloc(15 * sizeof(char));
+                        strcpy(sendingPayload, "x02:ERROR: Vent\n");
+                        Serial.println("Sending");
+                        xQueueSend(motorQueue, &sendingPayload, xTicksToWait);
+                        xSemaphoreGive(xSemaphore);
+                        vPortFree(sendingPayload);
+                        vTaskSuspend(Ventilation_handle);
+                    }
+                }
+                else
+                {
+                    Serial.println("The semaphore was not taken, inside vent");
+                }
             }
         }
     }
