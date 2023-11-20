@@ -40,7 +40,7 @@ TaskHandle_t Motor_handle, Ventilation_handle, Fuel_handle, Gearbox_handle, Chec
 QueueHandle_t motorQueue, ventQueue, dashQueue, fuelQueue;
 
 // SemaphoreHandle
-SemaphoreHandle_t xSemaphore = NULL, bSemaphore = NULL;
+SemaphoreHandle_t xSemaphore = NULL;
 
 void setup()
 {
@@ -51,12 +51,6 @@ void setup()
     {
         Serial.println("Mutex creation failed!");
         // Handle the error, possibly by blocking here or resetting the system
-    }
-
-    bSemaphore = xSemaphoreCreateBinary();
-    if (bSemaphore == NULL)
-    {
-        Serial.println("Binary semaphore creation failed!");
     }
 
     motorQueue = xQueueCreate(5, sizeof(char *));
