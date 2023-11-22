@@ -29,7 +29,7 @@ typedef struct Fuel_t
 } Fuel_t;
 
 // Initialize structs
-Motor_t MotorStatus = {true, true, 90, 2500};
+Motor_t MotorStatus = {false, true, 90, 2500};
 Ventilation_t VentStatus = {false};
 Fuel_t FuelStatus = {true, 50.03};
 
@@ -37,10 +37,18 @@ Fuel_t FuelStatus = {true, 50.03};
 TaskHandle_t Motor_handle, Ventilation_handle, Fuel_handle, Gearbox_handle, Check_handle, Dash_handle;
 
 // QueueHandles
-QueueHandle_t motorQueue, ventQueue, dashQueue, fuelQueue;
+QueueHandle_t motorQueue, ventQueue, dashQueue, fuelQueue, ventfuelcom;
 
 // SemaphoreHandle
 SemaphoreHandle_t xSemaphore = NULL;
+
+// Timerhandle
+TimerHandle_t mainTimer;
+
+// TickTypes
+const TickType_t xFrequency = pdMS_TO_TICKS(1000);
+TickType_t xTicksToWait = pdMS_TO_TICKS(100);
+TickType_t xLastWakeTime = xTaskGetTickCount();
 
 void setup()
 {
@@ -50,69 +58,74 @@ void setup()
     if (xSemaphore == NULL)
     {
         Serial.println("Mutex creation failed!");
-        // Handle the error, possibly by blocking here or resetting the system
     }
 
     motorQueue = xQueueCreate(5, sizeof(char *));
     ventQueue = xQueueCreate(5, sizeof(char *));
     fuelQueue = xQueueCreate(5, sizeof(char *));
     dashQueue = xQueueCreate(5, sizeof(char *));
+    ventfuelcom = xQueueCreate(5, sizeof(char *));
 
-    // xTimerCreate("mainTimer", PERIOD, pdTRUE,(void *)0, checkEngine);
+    mainTimer = xTimerCreate("mainTimer", xFrequency, pdTRUE, (void *)0, checkEngine);
 
-    xTaskCreate(dashBoard, "Dash", 128, NULL, 2, &Dash_handle);
-    xTaskCreate(checkEngine, "Brains of the operation", 128, NULL, 3, &Check_handle);
-    xTaskCreate(motor, "Motor simulation", 128, &MotorStatus, 2, &Motor_handle);
-    // xTimerStart(mainTimer, 0);
-    xTaskCreate(ventilation, "Ventilation simulation", 128, &VentStatus, 2, &Ventilation_handle);
-    xTaskCreate(fuel, "Fuel simulation", 128, &FuelStatus, 2, &Fuel_handle);
+    if (mainTimer == NULL)
+    {
+        Serial.println("TIMER ERROR not created");
+        vTaskDelay(xTicksToWait);
+    }
+
+    else
+    {
+        if (xTimerStart(mainTimer, 0) != pdPASS)
+        {
+            Serial.println("Timer not activated");
+            vTaskDelay(xTicksToWait);
+        }
+    }
+
+    xTaskCreate(dashBoard, "Dash", 256, NULL, 1, &Dash_handle);
+    xTaskCreate(motor, "Motor simulation", 256, &MotorStatus, 1, &Motor_handle);
+    xTaskCreate(ventilation, "Ventilation simulation", 256, &VentStatus, 1, &Ventilation_handle);
+    xTaskCreate(fuel, "Fuel simulation", 256, &FuelStatus, 1, &Fuel_handle);
     vTaskStartScheduler();
 }
 
-void checkEngine(void *parameters)
+void checkEngine(TimerHandle_t xTimer)
 {
     char *motorPayload = "Checking motor.\n";
     char *answer = NULL;
-    TickType_t longTick = pdMS_TO_TICKS(1000);
-    TickType_t xTicksToWait = pdMS_TO_TICKS(100);
-    TickType_t smallTick = pdMS_TO_TICKS(10);
-    BaseType_t qStatus;
 
-    while (1)
-    {
-        xQueueSend(motorQueue, &motorPayload, xTicksToWait);
-        vTaskDelay(xTicksToWait);
-
-        xQueueReceive(fuelQueue, (void *)&answer, xTicksToWait);
-
-        xQueueSend(dashQueue, (void *)&answer, xTicksToWait);
-        vTaskSuspend(Check_handle);
-    }
+    xQueueSend(motorQueue, &motorPayload, portMAX_DELAY);
+    xQueueReceive(fuelQueue, &answer, portMAX_DELAY);
+    xQueueSend(dashQueue, &answer, portMAX_DELAY);
 }
 
 void dashBoard(void *parameters) // the shared resource. prints to the serial monitor
 {
     char *receivedPayload = NULL;
     BaseType_t qStatus;
-    TickType_t xTicksToWait = pdMS_TO_TICKS(100);
 
     while (1)
     {
         if (xSemaphore != NULL)
         {
-            if (xSemaphoreTake(xSemaphore, xTicksToWait) == pdTRUE)
+            if (xSemaphoreTake(xSemaphore, portMAX_DELAY) == pdTRUE)
             {
-                qStatus = xQueueReceive(dashQueue, &receivedPayload, xTicksToWait);
-                if(qStatus == pdPASS)
+
+                qStatus = xQueueReceive(dashQueue, &receivedPayload, portMAX_DELAY);
+
+                if (qStatus == pdPASS && receivedPayload != NULL)
                 {
-                  Serial.println(receivedPayload);
+                    Serial.println(receivedPayload);
                 }
+
                 xSemaphoreGive(xSemaphore);
+                vTaskDelayUntil(&xLastWakeTime, xFrequency);
             }
             else
             {
                 Serial.println("Mutex was not taken.");
-                vTaskDelay(xTicksToWait);
+                vTaskDelayUntil(&xLastWakeTime, xFrequency);
             }
         }
     }
@@ -126,12 +139,11 @@ void motor(void *xMotor)
     char speed[10] = "";
     char rpm[10] = "";
     BaseType_t qStatus;
-    TickType_t xTicksToWait = pdMS_TO_TICKS(100);
 
     while (1)
     {
-        qStatus = xQueueReceive(motorQueue, &receivedPayload, xTicksToWait);
-        if (qStatus == pdPASS)
+        qStatus = xQueueReceive(motorQueue, &receivedPayload, portMAX_DELAY);
+        if (qStatus == pdPASS && receivedPayload != NULL)
         {
             if (motor->motorCheck == 1 && motor->GearboxCheck == 1)
             {
@@ -148,24 +160,23 @@ void motor(void *xMotor)
                     sprintf(rpm, "%i", motor->Rpm);
                     strcat(message, rpm);
                     strcat(message, "\n");
-                    xQueueSend(ventQueue, &message, xTicksToWait);
+                    xQueueSend(ventQueue, &message, portMAX_DELAY);
                     vPortFree(message);
-                    vTaskSuspend(Motor_handle);
                 }
             }
             else
             {
                 message = (char *)pvPortMalloc(200 * sizeof(char));
+                strcpy(message, receivedPayload);
                 strcat(message, "x01:ERROR: M.||Gb.\n");
-                xQueueSend(ventQueue, &message, xTicksToWait);
+                xQueueSend(ventQueue, &message, portMAX_DELAY);
                 vPortFree(message);
-                vTaskSuspend(Motor_handle);
             }
         }
-    }
-    vTaskSuspend(Motor_handle);
-}
 
+        vTaskDelayUntil(&xLastWakeTime, xFrequency);
+    }
+}
 
 void ventilation(void *xVentilation)
 {
@@ -176,13 +187,11 @@ void ventilation(void *xVentilation)
     char *receivedPayload = NULL;
     char *message = NULL;
     BaseType_t qStatus;
-    TickType_t xTicksToWait = pdMS_TO_TICKS(100);
 
     while (1)
     {
-
-        qStatus = xQueueReceive(ventQueue, &receivedPayload, xTicksToWait);
-        if (qStatus == pdPASS)
+        qStatus = xQueueReceive(ventQueue, &receivedPayload, portMAX_DELAY);
+        if (qStatus == pdPASS && receivedPayload != NULL)
         {
             if (xVent->ventilationCheck == true)
             {
@@ -190,10 +199,9 @@ void ventilation(void *xVentilation)
                 strcpy(message, receivedPayload);
                 strcat(message, ventPayload);
                 strcat(message, "Vent. is ok.\n");
-                xQueueSend(fuelQueue, &message, xTicksToWait);
-                xQueueSend(dashQueue, &ventOK, xTicksToWait);
+                xQueueSend(ventfuelcom, &message, portMAX_DELAY);
+                xQueueSend(dashQueue, &ventOK, portMAX_DELAY);
                 vPortFree(message);
-                vTaskSuspend(Ventilation_handle);
             }
 
             else
@@ -202,72 +210,70 @@ void ventilation(void *xVentilation)
                 strcpy(message, receivedPayload);
                 strcat(message, ventPayload);
                 strcat(message, "x02:ERROR: Vent\n");
-                xQueueSend(fuelQueue, &message, xTicksToWait);
-                xQueueSend(dashQueue, &ventFAIL, xTicksToWait);
+                xQueueSend(ventfuelcom, &message, portMAX_DELAY);
+                xQueueSend(dashQueue, &ventFAIL, portMAX_DELAY);
                 vPortFree(message);
-                vTaskSuspend(Ventilation_handle);
             }
         }
-        vTaskSuspend(Ventilation_handle);
+
+        vTaskDelayUntil(&xLastWakeTime, xFrequency);
     }
 }
 
 void fuel(void *xFuel)
 {
     Fuel_t *Fuel = (Fuel_t *)xFuel;
-    char *receivedPayload;
+    char *receivedPayload = NULL;
     char *fuelPayload = "Checking fuel.\n";
     char *fuelOK = "h$h$\n";
     char *fuelFAIL = "U$U$\n";
     char *message = NULL;
     char fuelPercentage[6] = "";
     BaseType_t qStatus;
-    TickType_t xTicksToWait = pdMS_TO_TICKS(100);
 
     while (1)
     {
-        qStatus = xQueueReceive(fuelQueue, &receivedPayload, xTicksToWait);
-        if (qStatus == pdPASS)
+        qStatus = xQueueReceive(ventfuelcom, &receivedPayload, portMAX_DELAY);
+        if (qStatus == pdPASS && receivedPayload != NULL)
         {
             if (Fuel->fuelCheck == true && Fuel->fuelGauge > 10)
             {
-                message = (char *)pvPortMalloc(200 * sizeof(char));
+                message = (char *)pvPortMalloc(250 * sizeof(char));
                 strcpy(message, receivedPayload);
                 strcat(message, fuelPayload);
                 strcat(message, "Fuel is ");
                 sprintf(fuelPercentage, "%.2f", Fuel->fuelGauge);
                 strcat(message, fuelPercentage);
                 strcat(message, "%\n");
-                xQueueSend(fuelQueue, &message, xTicksToWait);
-                xQueueSend(dashQueue, &fuelOK, xTicksToWait);
+                xQueueSend(fuelQueue, &message, portMAX_DELAY);
+                xQueueSend(dashQueue, &fuelOK, portMAX_DELAY);
                 vPortFree(message);
-                vTaskSuspend(Fuel_handle);
             }
 
             else if (Fuel->fuelCheck == true && Fuel->fuelGauge < 10 || Fuel->fuelCheck != true && Fuel->fuelGauge < 10)
             {
-                message = (char *)pvPortMalloc(200 * sizeof(char));
+                message = (char *)pvPortMalloc(250 * sizeof(char));
                 strcpy(message, receivedPayload);
                 strcat(message, fuelPayload);
                 strcat(message, "0x3: low fuel\n");
-                xQueueSend(fuelQueue, &message, xTicksToWait);
-                xQueueSend(dashQueue, &fuelFAIL, xTicksToWait);
+                xQueueSend(fuelQueue, &message, portMAX_DELAY);
+                xQueueSend(dashQueue, &fuelFAIL, portMAX_DELAY);
                 vPortFree(message);
-                vTaskSuspend(Fuel_handle);
             }
 
             else
             {
-                message = (char *)pvPortMalloc(200 * sizeof(char));
+                message = (char *)pvPortMalloc(250 * sizeof(char));
                 strcpy(message, receivedPayload);
                 strcat(message, fuelPayload);
                 strcat(message, "0x4 good fuel\n");
-                xQueueSend(fuelQueue, &message, xTicksToWait);
-                xQueueSend(dashQueue, &fuelOK, xTicksToWait);
+                xQueueSend(fuelQueue, &message, portMAX_DELAY);
+                xQueueSend(dashQueue, &fuelOK, portMAX_DELAY);
                 vPortFree(message);
-                vTaskSuspend(Fuel_handle);
             }
         }
+
+        vTaskDelayUntil(&xLastWakeTime, xFrequency);
     }
 }
 void loop()
